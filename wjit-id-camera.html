@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WJIT ID Camera</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      background: #101820;
+      color: #f7fbff;
+    }
+
+    main {
+      width: min(820px, 100%);
+      margin: 0 auto;
+      padding: 10px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 21px;
+    }
+
+    #target {
+      color: #d6e1eb;
+      font-size: 14px;
+      text-align: right;
+    }
+
+    #cameraBox {
+      position: relative;
+      width: 100%;
+      background: #000;
+      border: 1px solid #344454;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      min-height: 360px;
+      background: #000;
+    }
+
+    #overlay {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #ffeb3b;
+      font-size: clamp(52px, 16vw, 108px);
+      font-weight: 900;
+      text-shadow: 5px 5px 12px #000;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    button {
+      min-height: 54px;
+      border: 0;
+      border-radius: 7px;
+      padding: 12px;
+      font-size: 18px;
+      font-weight: 900;
+      color: #101820;
+      background: #ffeb3b;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: #dbe6ef;
+    }
+
+    button.danger {
+      background: #ff8a80;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    #status {
+      margin-top: 10px;
+      min-height: 34px;
+      color: #d6e1eb;
+      white-space: pre-line;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>ID Camera</h1>
+      <div id="target"></div>
+    </header>
+
+    <div id="cameraBox">
+      <video id="video" autoplay playsinline></video>
+      <div id="overlay">H0</div>
+    </div>
+
+    <div class="controls">
+      <button id="captureBtn" type="button" disabled>Capture</button>
+      <button id="skipBtn" class="secondary" type="button">Skip</button>
+      <button id="closeBtn" class="danger" type="button">Close</button>
+      <button id="switchBtn" class="secondary" type="button" disabled>Switch Camera</button>
+    </div>
+
+    <div id="status"></div>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionToken = params.get('session') || '';
+    let code = params.get('code') || '';
+    let label = params.get('label') || 'H0';
+    let mode = params.get('mode') || 'multi';
+    let stream = null;
+    let preferredFacingMode = 'environment';
+
+    const els = {
+      video: document.getElementById('video'),
+      overlay: document.getElementById('overlay'),
+      target: document.getElementById('target'),
+      captureBtn: document.getElementById('captureBtn'),
+      skipBtn: document.getElementById('skipBtn'),
+      closeBtn: document.getElementById('closeBtn'),
+      switchBtn: document.getElementById('switchBtn'),
+      status: document.getElementById('status')
+    };
+
+    function render() {
+      els.overlay.textContent = label;
+      els.target.textContent = [code, label].filter(Boolean).join(' / ');
+      els.skipBtn.hidden = mode !== 'multi';
+    }
+
+    function postToApp(type, extra) {
+      if (!window.opener) {
+        els.status.textContent = 'Main app window is not available.';
+        return;
+      }
+
+      window.opener.postMessage(Object.assign({
+        source: 'wjit-id-camera',
+        type,
+        sessionToken,
+        code,
+        label
+      }, extra || {}), '*');
+    }
+
+    function playShutterSound() {
+      try {
+        const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextImpl) return;
+        const audioCtx = new AudioContextImpl();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = 1000;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        const now = audioCtx.currentTime;
+        gain.gain.setValueAtTime(0.25, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        osc.start(now);
+        osc.stop(now + 0.08);
+      } catch (err) {
+        // Ignore audio failures.
+      }
+    }
+
+    function vibrate() {
+      if (navigator.vibrate) navigator.vibrate(80);
+    }
+
+    function stopCamera() {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      els.captureBtn.disabled = true;
+      els.switchBtn.disabled = true;
+    }
+
+    async function startCamera() {
+      stopCamera();
+      els.status.textContent = 'Starting camera...';
+
+      try {
+        const constraints = {
+          video: {
+            facingMode: { ideal: preferredFacingMode },
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+            advanced: [
+              { width: 3840, height: 2160 },
+              { width: 2560, height: 1440 },
+              { width: 1920, height: 1080 }
+            ]
+          }
+        };
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+
+        els.video.srcObject = stream;
+        els.captureBtn.disabled = false;
+        els.switchBtn.disabled = false;
+        els.status.textContent = 'Camera ready.';
+        postToApp('ready');
+      } catch (err) {
+        els.status.textContent = 'Camera error: ' + err.message;
+      }
+    }
+
+    function captureFrame() {
+      if (!stream) {
+        els.status.textContent = 'Start the camera first.';
+        return;
+      }
+
+      playShutterSound();
+      vibrate();
+
+      const canvas = document.createElement('canvas');
+      canvas.width = els.video.videoWidth;
+      canvas.height = els.video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(els.video, 0, 0, canvas.width, canvas.height);
+
+      const padding = 30;
+      const fontSize = Math.max(32, Math.floor(canvas.height / 25));
+      ctx.font = 'bold ' + fontSize + 'px Arial';
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.92)';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 8;
+      ctx.textAlign = 'right';
+      ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
+
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      postToApp('capture', { dataUrl });
+      els.status.textContent = 'Captured ' + label + '.';
+    }
+
+    function skipFrame() {
+      if (mode !== 'multi') return;
+      postToApp('skip');
+      els.status.textContent = 'Skipped ' + label + '.';
+    }
+
+    function switchCamera() {
+      preferredFacingMode = preferredFacingMode === 'environment' ? 'user' : 'environment';
+      startCamera();
+    }
+
+    window.addEventListener('message', event => {
+      const msg = event.data || {};
+      if (msg.source !== 'wjit-id-app') return;
+      if (msg.sessionToken !== sessionToken) return;
+
+      if (msg.type === 'set-target') {
+        code = msg.code || code;
+        label = msg.label || label;
+        mode = msg.mode || mode;
+        render();
+      } else if (msg.type === 'capture') {
+        captureFrame();
+      } else if (msg.type === 'skip') {
+        skipFrame();
+      } else if (msg.type === 'close') {
+        stopCamera();
+        postToApp('closed');
+        window.close();
+      }
+    });
+
+    els.captureBtn.addEventListener('click', captureFrame);
+    els.skipBtn.addEventListener('click', skipFrame);
+    els.closeBtn.addEventListener('click', () => {
+      stopCamera();
+      postToApp('closed');
+      window.close();
+    });
+    els.switchBtn.addEventListener('click', switchCamera);
+    window.addEventListener('beforeunload', () => {
+      stopCamera();
+      postToApp('closed');
+    });
+
+    render();
+    postToApp('ready');
+    startCamera();
+  </script>
+</body>
+</html>
