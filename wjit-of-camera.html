@@ -125,8 +125,8 @@
     </div>
 
     <div class="controls">
-      <button id="startBtn" type="button">Start Camera</button>
       <button id="captureBtn" type="button" disabled>Capture</button>
+      <button id="skipBtn" class="secondary" type="button">Skip</button>
       <button id="closeBtn" class="danger" type="button">Close</button>
       <button id="switchBtn" class="secondary" type="button" disabled>Switch Camera</button>
     </div>
@@ -139,6 +139,7 @@
     const sessionToken = params.get('session') || '';
     let code = params.get('code') || '';
     let label = params.get('label') || 'H0';
+    let mode = params.get('mode') || 'multi';
     let stream = null;
     let preferredFacingMode = 'environment';
 
@@ -146,8 +147,8 @@
       video: document.getElementById('video'),
       overlay: document.getElementById('overlay'),
       target: document.getElementById('target'),
-      startBtn: document.getElementById('startBtn'),
       captureBtn: document.getElementById('captureBtn'),
+      skipBtn: document.getElementById('skipBtn'),
       closeBtn: document.getElementById('closeBtn'),
       switchBtn: document.getElementById('switchBtn'),
       status: document.getElementById('status')
@@ -156,6 +157,7 @@
     function render() {
       els.overlay.textContent = label;
       els.target.textContent = [code, label].filter(Boolean).join(' / ');
+      els.skipBtn.hidden = mode !== 'multi';
     }
 
     function postToApp(type, extra) {
@@ -204,7 +206,6 @@
         stream = null;
       }
       els.captureBtn.disabled = true;
-      els.startBtn.disabled = false;
       els.switchBtn.disabled = true;
     }
 
@@ -234,7 +235,6 @@
 
         els.video.srcObject = stream;
         els.captureBtn.disabled = false;
-        els.startBtn.disabled = true;
         els.switchBtn.disabled = false;
         els.status.textContent = 'Camera ready.';
         postToApp('ready');
@@ -272,6 +272,12 @@
       els.status.textContent = 'Captured ' + label + '.';
     }
 
+    function skipFrame() {
+      if (mode !== 'multi') return;
+      postToApp('skip');
+      els.status.textContent = 'Skipped ' + label + '.';
+    }
+
     function switchCamera() {
       preferredFacingMode = preferredFacingMode === 'environment' ? 'user' : 'environment';
       startCamera();
@@ -285,9 +291,12 @@
       if (msg.type === 'set-target') {
         code = msg.code || code;
         label = msg.label || label;
+        mode = msg.mode || mode;
         render();
       } else if (msg.type === 'capture') {
         captureFrame();
+      } else if (msg.type === 'skip') {
+        skipFrame();
       } else if (msg.type === 'close') {
         stopCamera();
         postToApp('closed');
@@ -295,8 +304,8 @@
       }
     });
 
-    els.startBtn.addEventListener('click', startCamera);
     els.captureBtn.addEventListener('click', captureFrame);
+    els.skipBtn.addEventListener('click', skipFrame);
     els.closeBtn.addEventListener('click', () => {
       stopCamera();
       postToApp('closed');
@@ -310,6 +319,7 @@
 
     render();
     postToApp('ready');
+    startCamera();
   </script>
 </body>
 </html>
