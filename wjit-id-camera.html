@@ -142,6 +142,8 @@
     let mode = params.get('mode') || 'multi';
     let stream = null;
     let preferredFacingMode = 'environment';
+    const MAX_CAPTURE_WIDTH = 1600;
+    const JPEG_QUALITY = 0.76;
 
     const els = {
       video: document.getElementById('video'),
@@ -217,12 +219,12 @@
         const constraints = {
           video: {
             facingMode: { ideal: preferredFacingMode },
-            width: { ideal: 3840 },
-            height: { ideal: 2160 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
             advanced: [
-              { width: 3840, height: 2160 },
-              { width: 2560, height: 1440 },
-              { width: 1920, height: 1080 }
+              { width: 1920, height: 1080 },
+              { width: 1600, height: 900 },
+              { width: 1280, height: 720 }
             ]
           }
         };
@@ -252,11 +254,16 @@
       playShutterSound();
       vibrate();
 
+      const sourceWidth = els.video.videoWidth || 1280;
+      const sourceHeight = els.video.videoHeight || 720;
+      const scale = Math.min(1, MAX_CAPTURE_WIDTH / sourceWidth);
+      const outputWidth = Math.round(sourceWidth * scale);
+      const outputHeight = Math.round(sourceHeight * scale);
       const canvas = document.createElement('canvas');
-      canvas.width = els.video.videoWidth;
-      canvas.height = els.video.videoHeight;
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(els.video, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(els.video, 0, 0, outputWidth, outputHeight);
 
       const padding = 30;
       const fontSize = Math.max(32, Math.floor(canvas.height / 25));
@@ -267,9 +274,9 @@
       ctx.textAlign = 'right';
       ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
       postToApp('capture', { dataUrl });
-      els.status.textContent = 'Captured ' + label + '.';
+      els.status.textContent = 'Captured ' + label + '. Sending to app...';
     }
 
     function skipFrame() {
@@ -323,3 +330,5 @@
   </script>
 </body>
 </html>
+
+
