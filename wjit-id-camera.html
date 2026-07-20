@@ -115,17 +115,25 @@
     const params = new URLSearchParams(location.search);
     const sessionToken = params.get('session') || '';
     const uploadUrl = params.get('uploadUrl') || '';
+
     let code = params.get('code') || '';
     let label = params.get('label') || 'H0';
     let mode = params.get('mode') || 'multi';
     let boardTotal = parseInt(params.get('boardTotal') || '3', 10);
     let stream = null;
     let preferredFacingMode = 'environment';
-    let uploading = false;
     let cameraReady = false;
+    let finalMode = false;
 
     const MAX_CAPTURE_WIDTH = 1600;
     const JPEG_QUALITY = 0.76;
+
+    const uploadState = {
+      started: 0,
+      done: 0,
+      failed: 0,
+      tasks: []
+    };
 
     const els = {
       video: document.getElementById('video'),
@@ -144,11 +152,22 @@
       els.skipBtn.hidden = mode !== 'multi';
     }
 
-    function setBusy(isBusy) {
-      uploading = isBusy;
-      els.captureBtn.disabled = isBusy || !stream || !cameraReady;
-      els.skipBtn.disabled = isBusy;
-      els.switchBtn.disabled = isBusy || !stream || !cameraReady;
+    function updateButtons() {
+      const canUseCamera = !!stream && cameraReady && !finalMode;
+      els.captureBtn.disabled = !canUseCamera;
+      els.switchBtn.disabled = !canUseCamera;
+      els.skipBtn.disabled = finalMode;
+    }
+
+    function uploadText() {
+      if (uploadState.started === 0) return '';
+      return 'Uploads: ' + uploadState.done + '/' + uploadState.started +
+        (uploadState.failed ? ' failed: ' + uploadState.failed : '');
+    }
+
+    function setStatus(text) {
+      const extra = uploadText();
+      els.status.textContent = extra ? text + '\n' + extra : text;
     }
 
     function postToApp(type, extra) {
@@ -206,8 +225,7 @@
         stream = null;
       }
 
-      els.captureBtn.disabled = true;
-      els.switchBtn.disabled = true;
+      updateButtons();
     }
 
     function waitForVideoReady() {
@@ -230,7 +248,7 @@
 
     async function startCamera() {
       stopCamera();
-      els.status.textContent = 'Starting camera...';
+      setStatus('Starting camera...');
 
       try {
         const constraints = {
@@ -253,9 +271,8 @@
         }
 
         els.video.srcObject = stream;
-        els.captureBtn.disabled = true;
-        els.switchBtn.disabled = true;
-        els.status.textContent = 'Waiting for camera preview...';
+        updateButtons();
+        setStatus('Waiting for camera preview...');
 
         try {
           await els.video.play();
@@ -264,36 +281,43 @@
         await waitForVideoReady();
 
         cameraReady = true;
-        els.captureBtn.disabled = false;
-        els.switchBtn.disabled = false;
-        els.status.textContent = 'Camera ready. Press Capture.';
+        updateButtons();
+        setStatus('Camera ready. Press Capture.');
         postToApp('ready');
       } catch (err) {
-        els.status.textContent = 'Camera error: ' + err.message;
+        setStatus('Camera error: ' + err.message);
       }
     }
 
     function captureFrame() {
-      if (uploading) return;
+      if (finalMode) return;
 
       if (!stream || !cameraReady || els.video.readyState < 2 || !els.video.videoWidth) {
-        els.status.textContent = 'Camera is still starting. Please wait until Camera ready.';
+        setStatus('Camera is still starting. Please wait until Camera ready.');
         return;
       }
 
       if (!uploadUrl) {
-        els.status.textContent = 'Upload URL missing. Open camera from the main app page.';
+        setStatus('Upload URL missing. Open camera from the main app page.');
         return;
       }
 
       if (!code) {
-        els.status.textContent = 'ID missing. Open camera from the main app page.';
+        setStatus('ID missing. Open camera from the main app page.');
         return;
       }
 
       playShutterSound();
       vibrate();
 
+      const capturedLabel = label;
+      const dataUrl = makePhotoDataUrl(capturedLabel);
+
+      queueUpload(capturedLabel, dataUrl);
+      advanceAfterCapture(capturedLabel);
+    }
+
+    function makePhotoDataUrl(capturedLabel) {
       const sourceWidth = els.video.videoWidth || 1280;
       const sourceHeight = els.video.videoHeight || 720;
       const scale = Math.min(1, MAX_CAPTURE_WIDTH / sourceWidth);
@@ -314,85 +338,104 @@
       ctx.shadowColor = '#000';
       ctx.shadowBlur = 8;
       ctx.textAlign = 'right';
-      ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
+      ctx.fillText(code + ' / ' + capturedLabel, canvas.width - padding, canvas.height - padding);
 
-      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-      uploadDirect(dataUrl);
+      return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
     }
 
-    async function uploadDirect(dataUrl) {
-      setBusy(true);
-      els.status.textContent = 'Uploading ' + label + '...';
+    function queueUpload(position, dataUrl) {
+      uploadState.started++;
 
-      try {
-        await fetch(uploadUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8'
-          },
-          body: JSON.stringify({
-            source: 'wjit-id-camera',
-            sessionToken,
-            code: normalizeCode(code),
-            position: label,
-            imageData: dataUrl
-          })
+      const task = fetch(uploadUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8'
+        },
+        body: JSON.stringify({
+          source: 'wjit-id-camera',
+          sessionToken,
+          code: normalizeCode(code),
+          position,
+          imageData: dataUrl
+        })
+      })
+        .then(() => {
+          uploadState.done++;
+          postToApp('direct-uploaded', { position });
+        })
+        .catch(() => {
+          uploadState.failed++;
+        })
+        .finally(() => {
+          if (finalMode) {
+            setStatus('Finishing uploads...');
+          } else {
+            setStatus('Ready for ' + label + '.');
+          }
         });
 
-        els.status.textContent = 'Uploaded ' + label + '.';
-        postToApp('direct-uploaded', { position: label });
-
-        setTimeout(() => {
-          advanceAfterUpload();
-          setBusy(false);
-        }, 500);
-      } catch (err) {
-        els.status.textContent = 'Upload error: ' + err.message;
-        setBusy(false);
-      }
+      uploadState.tasks.push(task);
+      setStatus('Captured ' + position + '. Ready for next.');
     }
 
-    function advanceAfterUpload() {
+    function advanceAfterCapture(capturedLabel) {
       if (mode !== 'multi') {
-        stopCamera();
-        window.close();
+        finishAfterAllUploads();
         return;
       }
 
-      const currentNumber = parseInt(String(label).replace('H', ''), 10);
+      const currentNumber = parseInt(String(capturedLabel).replace('H', ''), 10);
 
       if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
         label = 'H' + (currentNumber + 1);
         render();
-        els.status.textContent = 'Ready for ' + label + '.';
+        setStatus('Ready for ' + label + '.');
       } else {
-        els.status.textContent = 'Upload complete. You can close camera.';
-        stopCamera();
-        setTimeout(() => window.close(), 800);
+        finishAfterAllUploads();
       }
     }
 
     function skipFrame() {
-      if (mode !== 'multi' || uploading) return;
+      if (mode !== 'multi' || finalMode) return;
 
       const currentNumber = parseInt(String(label).replace('H', ''), 10);
 
       if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
         label = 'H' + (currentNumber + 1);
         render();
-        els.status.textContent = 'Skipped. Ready for ' + label + '.';
+        setStatus('Skipped. Ready for ' + label + '.');
       } else {
-        els.status.textContent = 'Finished. You can close camera.';
-        stopCamera();
-        setTimeout(() => window.close(), 800);
+        finishAfterAllUploads();
       }
 
       postToApp('skip');
     }
 
+    async function finishAfterAllUploads() {
+      finalMode = true;
+      updateButtons();
+      stopCamera();
+
+      if (uploadState.tasks.length === 0) {
+        setStatus('Finished. No photos to upload.');
+        setTimeout(() => window.close(), 900);
+        return;
+      }
+
+      setStatus('Finishing uploads...');
+      await Promise.allSettled(uploadState.tasks);
+
+      if (uploadState.failed > 0) {
+        setStatus('Upload finished with ' + uploadState.failed + ' failed. Please check Drive.');
+      } else {
+        setStatus('Upload complete. Closing camera...');
+        setTimeout(() => window.close(), 900);
+      }
+    }
+
     function switchCamera() {
-      if (uploading) return;
+      if (finalMode) return;
       preferredFacingMode = preferredFacingMode === 'environment' ? 'user' : 'environment';
       startCamera();
     }
@@ -402,7 +445,7 @@
       if (msg.source !== 'wjit-id-app') return;
       if (msg.sessionToken !== sessionToken) return;
 
-      if (msg.type === 'set-target' && !uploading) {
+      if (msg.type === 'set-target' && !finalMode) {
         code = msg.code || code;
         label = msg.label || label;
         mode = msg.mode || mode;
@@ -412,19 +455,13 @@
       } else if (msg.type === 'skip') {
         skipFrame();
       } else if (msg.type === 'close') {
-        stopCamera();
-        postToApp('closed');
-        window.close();
+        finishAfterAllUploads();
       }
     });
 
     els.captureBtn.addEventListener('click', captureFrame);
     els.skipBtn.addEventListener('click', skipFrame);
-    els.closeBtn.addEventListener('click', () => {
-      stopCamera();
-      postToApp('closed');
-      window.close();
-    });
+    els.closeBtn.addEventListener('click', finishAfterAllUploads);
     els.switchBtn.addEventListener('click', switchCamera);
 
     window.addEventListener('beforeunload', () => {
