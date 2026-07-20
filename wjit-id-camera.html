@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WJIT ID Camera</title>
   <style>
-    * {
-      box-sizing: border-box;
-    }
-
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
@@ -16,13 +13,11 @@
       background: #101820;
       color: #f7fbff;
     }
-
     main {
       width: min(820px, 100%);
       margin: 0 auto;
       padding: 10px;
     }
-
     header {
       display: flex;
       align-items: center;
@@ -30,18 +25,12 @@
       gap: 10px;
       margin-bottom: 10px;
     }
-
-    h1 {
-      margin: 0;
-      font-size: 21px;
-    }
-
+    h1 { margin: 0; font-size: 21px; }
     #target {
       color: #d6e1eb;
       font-size: 14px;
       text-align: right;
     }
-
     #cameraBox {
       position: relative;
       width: 100%;
@@ -50,14 +39,12 @@
       border-radius: 8px;
       overflow: hidden;
     }
-
     video {
       display: block;
       width: 100%;
       min-height: 360px;
       background: #000;
     }
-
     #overlay {
       position: absolute;
       top: 24px;
@@ -70,14 +57,12 @@
       pointer-events: none;
       white-space: nowrap;
     }
-
     .controls {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10px;
       margin-top: 10px;
     }
-
     button {
       min-height: 54px;
       border: 0;
@@ -89,20 +74,12 @@
       background: #ffeb3b;
       cursor: pointer;
     }
-
-    button.secondary {
-      background: #dbe6ef;
-    }
-
-    button.danger {
-      background: #ff8a80;
-    }
-
+    button.secondary { background: #dbe6ef; }
+    button.danger { background: #ff8a80; }
     button:disabled {
       cursor: not-allowed;
       opacity: 0.55;
     }
-
     #status {
       margin-top: 10px;
       min-height: 34px;
@@ -142,8 +119,13 @@
     let mode = params.get('mode') || 'multi';
     let stream = null;
     let preferredFacingMode = 'environment';
+
     const MAX_CAPTURE_WIDTH = 1600;
     const JPEG_QUALITY = 0.76;
+
+    let lastCapturePayload = null;
+    let resendTimer = null;
+    let resendCount = 0;
 
     const els = {
       video: document.getElementById('video'),
@@ -177,6 +159,40 @@
       }, extra || {}), '*');
     }
 
+    function sendCaptureToApp(dataUrl) {
+      lastCapturePayload = { dataUrl };
+      resendCount = 0;
+      postToApp('capture', lastCapturePayload);
+      els.status.textContent = 'Captured ' + label + '. Sending to app...';
+
+      if (resendTimer) clearInterval(resendTimer);
+      resendTimer = setInterval(() => {
+        resendCount++;
+
+        if (resendCount > 6) {
+          clearInterval(resendTimer);
+          resendTimer = null;
+          els.status.textContent = 'Captured ' + label + ', but iPhone did not confirm upload.\nPlease return to the main app page.';
+          try {
+            window.opener.focus();
+          } catch (err) {}
+          return;
+        }
+
+        postToApp('capture', lastCapturePayload);
+        els.status.textContent = 'Captured ' + label + '. Sending to app... retry ' + resendCount;
+      }, 900);
+    }
+
+    function markCaptureReceived() {
+      if (resendTimer) {
+        clearInterval(resendTimer);
+        resendTimer = null;
+      }
+      lastCapturePayload = null;
+      els.status.textContent = 'Photo received by app.';
+    }
+
     function playShutterSound() {
       try {
         const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
@@ -193,9 +209,7 @@
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
         osc.start(now);
         osc.stop(now + 0.08);
-      } catch (err) {
-        // Ignore audio failures.
-      }
+      } catch (err) {}
     }
 
     function vibrate() {
@@ -259,9 +273,11 @@
       const scale = Math.min(1, MAX_CAPTURE_WIDTH / sourceWidth);
       const outputWidth = Math.round(sourceWidth * scale);
       const outputHeight = Math.round(sourceHeight * scale);
+
       const canvas = document.createElement('canvas');
       canvas.width = outputWidth;
       canvas.height = outputHeight;
+
       const ctx = canvas.getContext('2d');
       ctx.drawImage(els.video, 0, 0, outputWidth, outputHeight);
 
@@ -275,8 +291,7 @@
       ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
 
       const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-      postToApp('capture', { dataUrl });
-      els.status.textContent = 'Captured ' + label + '. Sending to app...';
+      sendCaptureToApp(dataUrl);
     }
 
     function skipFrame() {
@@ -304,6 +319,8 @@
         captureFrame();
       } else if (msg.type === 'skip') {
         skipFrame();
+      } else if (msg.type === 'capture-received') {
+        markCaptureReceived();
       } else if (msg.type === 'close') {
         stopCamera();
         postToApp('closed');
@@ -319,6 +336,7 @@
       window.close();
     });
     els.switchBtn.addEventListener('click', switchCamera);
+
     window.addEventListener('beforeunload', () => {
       stopCamera();
       postToApp('closed');
@@ -330,5 +348,3 @@
   </script>
 </body>
 </html>
-
-
