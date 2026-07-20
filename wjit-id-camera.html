@@ -431,23 +431,14 @@
     }
 
     window.addEventListener('message', event => {
-      const msg = event.data || {};
-      if (msg.source !== 'wjit-id-app') return;
-      if (msg.sessionToken !== sessionToken) return;
+  const msg = event.data || {};
+  if (msg.source !== 'wjit-id-app') return;
+  if (msg.sessionToken !== sessionToken) return;
 
-      if (msg.type === 'set-target' && !finalMode) {
-        code = msg.code || code;
-        label = msg.label || label;
-        mode = msg.mode || mode;
-        render();
-      } else if (msg.type === 'capture') {
-        captureFrame();
-      } else if (msg.type === 'skip') {
-        skipFrame();
-      } else if (msg.type === 'close') {
-        finishAfterAllUploads();
-      }
-    });
+  if (msg.type === 'close') {
+    finishAfterAllUploads();
+  }
+});
 
     els.captureBtn.addEventListener('click', captureFrame);
     els.skipBtn.addEventListener('click', skipFrame);
@@ -461,7 +452,6 @@
 
     code = normalizeCode(code);
     render();
-    postToApp('ready');
     startCamera();
   </script>
 </body>
