@@ -247,47 +247,37 @@
     }
 
     async function startCamera() {
-      stopCamera();
-      setStatus('Starting camera...');
+  stopCamera();
+  setStatus('Starting camera...');
 
-      try {
-        const constraints = {
-          video: {
-            facingMode: { ideal: preferredFacingMode },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            advanced: [
-              { width: 1920, height: 1080 },
-              { width: 1600, height: 900 },
-              { width: 1280, height: 720 }
-            ]
-          }
-        };
-
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
-        } catch (err) {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        }
-
-        els.video.srcObject = stream;
-        updateButtons();
-        setStatus('Waiting for camera preview...');
-
-        try {
-          await els.video.play();
-        } catch (err) {}
-
-        await waitForVideoReady();
-
-        cameraReady = true;
-        updateButtons();
-        setStatus('Camera ready. Press Capture.');
-        postToApp('ready');
-      } catch (err) {
-        setStatus('Camera error: ' + err.message);
+  try {
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: preferredFacingMode
       }
-    }
+    };
+
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    els.video.srcObject = stream;
+    updateButtons();
+    setStatus('Waiting for camera preview...');
+
+    try {
+      await els.video.play();
+    } catch (err) {}
+
+    await waitForVideoReady();
+
+    cameraReady = true;
+    updateButtons();
+    setStatus('Camera ready. Press Capture.');
+    postToApp('ready');
+  } catch (err) {
+    setStatus('Camera error: ' + err.message);
+  }
+}
 
     function captureFrame() {
       if (finalMode) return;
