@@ -5,9 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WJIT OF Camera</title>
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -90,13 +88,8 @@
       cursor: pointer;
     }
 
-    button.secondary {
-      background: #dbe6ef;
-    }
-
-    button.danger {
-      background: #ff8a80;
-    }
+    button.secondary { background: #dbe6ef; }
+    button.danger { background: #ff8a80; }
 
     button:disabled {
       cursor: not-allowed;
@@ -120,7 +113,7 @@
     </header>
 
     <div id="cameraBox">
-      <video id="video" autoplay playsinline></video>
+      <video id="video" autoplay playsinline muted></video>
       <div id="overlay">H0</div>
     </div>
 
@@ -137,11 +130,26 @@
   <script>
     const params = new URLSearchParams(location.search);
     const sessionToken = params.get('session') || '';
+    const uploadUrl = params.get('uploadUrl') || '';
+
     let code = params.get('code') || '';
     let label = params.get('label') || 'H0';
     let mode = params.get('mode') || 'multi';
+    let boardTotal = parseInt(params.get('boardTotal') || '3', 10);
     let stream = null;
     let preferredFacingMode = 'environment';
+    let cameraReady = false;
+    let finalMode = false;
+
+    const MAX_CAPTURE_WIDTH = 2560;
+    const JPEG_QUALITY = 0.9;
+
+    const uploadState = {
+      started: 0,
+      done: 0,
+      failed: 0,
+      tasks: []
+    };
 
     const els = {
       video: document.getElementById('video'),
@@ -160,19 +168,46 @@
       els.skipBtn.hidden = mode !== 'multi';
     }
 
-    function postToApp(type, extra) {
-      if (!window.opener) {
-        els.status.textContent = 'Main app window is not available.';
-        return;
-      }
+    function updateButtons() {
+      const canUseCamera = !!stream && cameraReady && !finalMode;
+      els.captureBtn.disabled = !canUseCamera;
+      els.switchBtn.disabled = !canUseCamera;
+      els.skipBtn.disabled = finalMode;
+    }
 
-      window.opener.postMessage(Object.assign({
-        source: 'wjit-of-camera',
-        type,
-        sessionToken,
-        code,
-        label
-      }, extra || {}), '*');
+    function uploadText() {
+      if (uploadState.started === 0) return '';
+      return 'Uploads: ' + uploadState.done + '/' + uploadState.started +
+        (uploadState.failed ? ' failed: ' + uploadState.failed : '');
+    }
+
+    function setStatus(text) {
+      const extra = uploadText();
+      els.status.textContent = extra ? text + '\n' + extra : text;
+    }
+
+    function postToApp(type, extra) {
+      try {
+        if (!window.opener) return;
+        window.opener.postMessage(Object.assign({
+          source: 'wjit-of-camera',
+          type,
+          sessionToken,
+          code,
+          label
+        }, extra || {}), '*');
+      } catch (err) {}
+    }
+
+    function normalizeCode(raw) {
+      const digits = String(raw || '')
+        .toUpperCase()
+        .replace(/^OF\.?/, '')
+        .replace(/\D/g, '');
+
+      if (!digits) return '';
+      if (digits.length <= 4) return 'OF.' + digits;
+      return 'OF.' + digits.slice(0, 4) + '.' + digits.slice(4, 6);
     }
 
     function playShutterSound() {
@@ -191,9 +226,7 @@
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
         osc.start(now);
         osc.stop(now + 0.08);
-      } catch (err) {
-        // Ignore audio failures.
-      }
+      } catch (err) {}
     }
 
     function vibrate() {
@@ -201,62 +234,109 @@
     }
 
     function stopCamera() {
+      cameraReady = false;
+
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         stream = null;
       }
-      els.captureBtn.disabled = true;
-      els.switchBtn.disabled = true;
+
+      updateButtons();
+    }
+
+    function waitForVideoReady() {
+      return new Promise(resolve => {
+        if (els.video.readyState >= 2 && els.video.videoWidth > 0) {
+          resolve();
+          return;
+        }
+
+        const done = () => {
+          els.video.removeEventListener('loadedmetadata', done);
+          els.video.removeEventListener('canplay', done);
+          resolve();
+        };
+
+        els.video.addEventListener('loadedmetadata', done);
+        els.video.addEventListener('canplay', done);
+      });
     }
 
     async function startCamera() {
       stopCamera();
-      els.status.textContent = 'Starting camera...';
+      setStatus('Starting camera...');
 
       try {
         const constraints = {
+          audio: false,
           video: {
             facingMode: { ideal: preferredFacingMode },
-            width: { ideal: 3840 },
-            height: { ideal: 2160 },
-            advanced: [
-              { width: 3840, height: 2160 },
-              { width: 2560, height: 1440 },
-              { width: 1920, height: 1080 }
-            ]
+            width: { ideal: 2560 },
+            height: { ideal: 1440 }
           }
         };
 
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints);
-        } catch (err) {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        }
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
 
         els.video.srcObject = stream;
-        els.captureBtn.disabled = false;
-        els.switchBtn.disabled = false;
-        els.status.textContent = 'Camera ready.';
-        postToApp('ready');
+        updateButtons();
+        setStatus('Waiting for camera preview...');
+
+        try {
+          await els.video.play();
+        } catch (err) {}
+
+        await waitForVideoReady();
+
+        cameraReady = true;
+        updateButtons();
+        setStatus('Camera ready. Press Capture.');
       } catch (err) {
-        els.status.textContent = 'Camera error: ' + err.message;
+        setStatus('Camera error: ' + err.message);
       }
     }
 
     function captureFrame() {
-      if (!stream) {
-        els.status.textContent = 'Start the camera first.';
+      if (finalMode) return;
+
+      if (!stream || !cameraReady || els.video.readyState < 2 || !els.video.videoWidth) {
+        setStatus('Camera is still starting. Please wait until Camera ready.');
+        return;
+      }
+
+      if (!uploadUrl) {
+        setStatus('Upload URL missing. Open camera from the main app page.');
+        return;
+      }
+
+      if (!code) {
+        setStatus('OF missing. Open camera from the main app page.');
         return;
       }
 
       playShutterSound();
       vibrate();
 
+      const capturedLabel = label;
+      const dataUrl = makePhotoDataUrl(capturedLabel);
+
+      queueUpload(capturedLabel, dataUrl);
+      advanceAfterCapture(capturedLabel);
+    }
+
+    function makePhotoDataUrl(capturedLabel) {
+      const sourceWidth = els.video.videoWidth || 1280;
+      const sourceHeight = els.video.videoHeight || 720;
+      const scale = Math.min(1, MAX_CAPTURE_WIDTH / sourceWidth);
+      const outputWidth = Math.round(sourceWidth * scale);
+      const outputHeight = Math.round(sourceHeight * scale);
+
       const canvas = document.createElement('canvas');
-      canvas.width = els.video.videoWidth;
-      canvas.height = els.video.videoHeight;
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
+
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(els.video, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(els.video, 0, 0, outputWidth, outputHeight);
 
       const padding = 30;
       const fontSize = Math.max(32, Math.floor(canvas.height / 25));
@@ -265,20 +345,104 @@
       ctx.shadowColor = '#000';
       ctx.shadowBlur = 8;
       ctx.textAlign = 'right';
-      ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
+      ctx.fillText(code + ' / ' + capturedLabel, canvas.width - padding, canvas.height - padding);
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      postToApp('capture', { dataUrl });
-      els.status.textContent = 'Captured ' + label + '.';
+      return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+    }
+
+    function queueUpload(position, dataUrl) {
+      uploadState.started++;
+
+      const task = fetch(uploadUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8'
+        },
+        body: JSON.stringify({
+          source: 'wjit-of-camera',
+          sessionToken,
+          code: normalizeCode(code),
+          position,
+          imageData: dataUrl
+        })
+      })
+        .then(() => {
+          uploadState.done++;
+          postToApp('direct-uploaded', { position });
+        })
+        .catch(() => {
+          uploadState.failed++;
+        })
+        .finally(() => {
+          if (finalMode) {
+            setStatus('Finishing uploads...');
+          } else {
+            setStatus('Ready for ' + label + '.');
+          }
+        });
+
+      uploadState.tasks.push(task);
+      setStatus('Captured ' + position + '. Ready for next.');
+    }
+
+    function advanceAfterCapture(capturedLabel) {
+      if (mode !== 'multi') {
+        finishAfterAllUploads();
+        return;
+      }
+
+      const currentNumber = parseInt(String(capturedLabel).replace('H', ''), 10);
+
+      if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
+        label = 'H' + (currentNumber + 1);
+        render();
+        setStatus('Ready for ' + label + '.');
+      } else {
+        finishAfterAllUploads();
+      }
     }
 
     function skipFrame() {
-      if (mode !== 'multi') return;
+      if (mode !== 'multi' || finalMode) return;
+
+      const currentNumber = parseInt(String(label).replace('H', ''), 10);
+
+      if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
+        label = 'H' + (currentNumber + 1);
+        render();
+        setStatus('Skipped. Ready for ' + label + '.');
+      } else {
+        finishAfterAllUploads();
+      }
+
       postToApp('skip');
-      els.status.textContent = 'Skipped ' + label + '.';
+    }
+
+    async function finishAfterAllUploads() {
+      finalMode = true;
+      updateButtons();
+      stopCamera();
+
+      if (uploadState.tasks.length === 0) {
+        setStatus('Finished. No photos to upload.');
+        setTimeout(() => window.close(), 900);
+        return;
+      }
+
+      setStatus('Finishing uploads...');
+      await Promise.allSettled(uploadState.tasks);
+
+      if (uploadState.failed > 0) {
+        setStatus('Upload finished with ' + uploadState.failed + ' failed. Please check Drive.');
+      } else {
+        setStatus('Upload complete. Closing camera...');
+        setTimeout(() => window.close(), 900);
+      }
     }
 
     function switchCamera() {
+      if (finalMode) return;
       preferredFacingMode = preferredFacingMode === 'environment' ? 'user' : 'environment';
       startCamera();
     }
@@ -288,37 +452,23 @@
       if (msg.source !== 'wjit-of-app') return;
       if (msg.sessionToken !== sessionToken) return;
 
-      if (msg.type === 'set-target') {
-        code = msg.code || code;
-        label = msg.label || label;
-        mode = msg.mode || mode;
-        render();
-      } else if (msg.type === 'capture') {
-        captureFrame();
-      } else if (msg.type === 'skip') {
-        skipFrame();
-      } else if (msg.type === 'close') {
-        stopCamera();
-        postToApp('closed');
-        window.close();
+      if (msg.type === 'close') {
+        finishAfterAllUploads();
       }
     });
 
     els.captureBtn.addEventListener('click', captureFrame);
     els.skipBtn.addEventListener('click', skipFrame);
-    els.closeBtn.addEventListener('click', () => {
-      stopCamera();
-      postToApp('closed');
-      window.close();
-    });
+    els.closeBtn.addEventListener('click', finishAfterAllUploads);
     els.switchBtn.addEventListener('click', switchCamera);
+
     window.addEventListener('beforeunload', () => {
       stopCamera();
       postToApp('closed');
     });
 
+    code = normalizeCode(code);
     render();
-    postToApp('ready');
     startCamera();
   </script>
 </body>
