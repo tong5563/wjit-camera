@@ -114,18 +114,17 @@
   <script>
     const params = new URLSearchParams(location.search);
     const sessionToken = params.get('session') || '';
+    const uploadUrl = params.get('uploadUrl') || '';
     let code = params.get('code') || '';
     let label = params.get('label') || 'H0';
     let mode = params.get('mode') || 'multi';
+    let boardTotal = parseInt(params.get('boardTotal') || '3', 10);
     let stream = null;
     let preferredFacingMode = 'environment';
+    let uploading = false;
 
     const MAX_CAPTURE_WIDTH = 1600;
     const JPEG_QUALITY = 0.76;
-
-    let lastCapturePayload = null;
-    let resendTimer = null;
-    let resendCount = 0;
 
     const els = {
       video: document.getElementById('video'),
@@ -144,53 +143,35 @@
       els.skipBtn.hidden = mode !== 'multi';
     }
 
+    function setBusy(isBusy) {
+      uploading = isBusy;
+      els.captureBtn.disabled = isBusy || !stream;
+      els.skipBtn.disabled = isBusy;
+      els.switchBtn.disabled = isBusy || !stream;
+    }
+
     function postToApp(type, extra) {
-      if (!window.opener) {
-        els.status.textContent = 'Main app window is not available.';
-        return;
-      }
-
-      window.opener.postMessage(Object.assign({
-        source: 'wjit-id-camera',
-        type,
-        sessionToken,
-        code,
-        label
-      }, extra || {}), '*');
+      try {
+        if (!window.opener) return;
+        window.opener.postMessage(Object.assign({
+          source: 'wjit-id-camera',
+          type,
+          sessionToken,
+          code,
+          label
+        }, extra || {}), '*');
+      } catch (err) {}
     }
 
-    function sendCaptureToApp(dataUrl) {
-      lastCapturePayload = { dataUrl };
-      resendCount = 0;
-      postToApp('capture', lastCapturePayload);
-      els.status.textContent = 'Captured ' + label + '. Sending to app...';
+    function normalizeCode(raw) {
+      const digits = String(raw || '')
+        .toUpperCase()
+        .replace(/^ID\.?/, '')
+        .replace(/\D/g, '');
 
-      if (resendTimer) clearInterval(resendTimer);
-      resendTimer = setInterval(() => {
-        resendCount++;
-
-        if (resendCount > 6) {
-          clearInterval(resendTimer);
-          resendTimer = null;
-          els.status.textContent = 'Captured ' + label + ', but iPhone did not confirm upload.\nPlease return to the main app page.';
-          try {
-            window.opener.focus();
-          } catch (err) {}
-          return;
-        }
-
-        postToApp('capture', lastCapturePayload);
-        els.status.textContent = 'Captured ' + label + '. Sending to app... retry ' + resendCount;
-      }, 900);
-    }
-
-    function markCaptureReceived() {
-      if (resendTimer) {
-        clearInterval(resendTimer);
-        resendTimer = null;
-      }
-      lastCapturePayload = null;
-      els.status.textContent = 'Photo received by app.';
+      if (!digits) return '';
+      if (digits.length <= 4) return 'ID.' + digits;
+      return 'ID.' + digits.slice(0, 4) + '.' + digits.slice(4, 6);
     }
 
     function playShutterSound() {
@@ -221,6 +202,7 @@
         stream.getTracks().forEach(track => track.stop());
         stream = null;
       }
+      setBusy(false);
       els.captureBtn.disabled = true;
       els.switchBtn.disabled = true;
     }
@@ -260,8 +242,15 @@
     }
 
     function captureFrame() {
-      if (!stream) {
-        els.status.textContent = 'Start the camera first.';
+      if (!stream || uploading) return;
+
+      if (!uploadUrl) {
+        els.status.textContent = 'Upload URL missing. Open camera from the main app page.';
+        return;
+      }
+
+      if (!code) {
+        els.status.textContent = 'ID missing. Open camera from the main app page.';
         return;
       }
 
@@ -291,16 +280,80 @@
       ctx.fillText(code + ' / ' + label, canvas.width - padding, canvas.height - padding);
 
       const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-      sendCaptureToApp(dataUrl);
+      uploadDirect(dataUrl);
+    }
+
+    async function uploadDirect(dataUrl) {
+      setBusy(true);
+      els.status.textContent = 'Uploading ' + label + '...';
+
+      try {
+        await fetch(uploadUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8'
+          },
+          body: JSON.stringify({
+            source: 'wjit-id-camera',
+            sessionToken,
+            code: normalizeCode(code),
+            position: label,
+            imageData: dataUrl
+          })
+        });
+
+        els.status.textContent = 'Uploaded ' + label + '.';
+        postToApp('direct-uploaded', { position: label });
+
+        setTimeout(() => {
+          advanceAfterUpload();
+          setBusy(false);
+        }, 500);
+      } catch (err) {
+        els.status.textContent = 'Upload error: ' + err.message;
+        setBusy(false);
+      }
+    }
+
+    function advanceAfterUpload() {
+      if (mode !== 'multi') {
+        stopCamera();
+        window.close();
+        return;
+      }
+
+      const currentNumber = parseInt(String(label).replace('H', ''), 10);
+      if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
+        label = 'H' + (currentNumber + 1);
+        render();
+        els.status.textContent = 'Ready for ' + label + '.';
+      } else {
+        els.status.textContent = 'Upload complete. You can close camera.';
+        stopCamera();
+        setTimeout(() => window.close(), 800);
+      }
     }
 
     function skipFrame() {
-      if (mode !== 'multi') return;
+      if (mode !== 'multi' || uploading) return;
+
+      const currentNumber = parseInt(String(label).replace('H', ''), 10);
+      if (!Number.isNaN(currentNumber) && currentNumber + 1 < boardTotal) {
+        label = 'H' + (currentNumber + 1);
+        render();
+        els.status.textContent = 'Skipped. Ready for ' + label + '.';
+      } else {
+        els.status.textContent = 'Finished. You can close camera.';
+        stopCamera();
+        setTimeout(() => window.close(), 800);
+      }
+
       postToApp('skip');
-      els.status.textContent = 'Skipped ' + label + '.';
     }
 
     function switchCamera() {
+      if (uploading) return;
       preferredFacingMode = preferredFacingMode === 'environment' ? 'user' : 'environment';
       startCamera();
     }
@@ -310,7 +363,7 @@
       if (msg.source !== 'wjit-id-app') return;
       if (msg.sessionToken !== sessionToken) return;
 
-      if (msg.type === 'set-target') {
+      if (msg.type === 'set-target' && !uploading) {
         code = msg.code || code;
         label = msg.label || label;
         mode = msg.mode || mode;
@@ -319,8 +372,6 @@
         captureFrame();
       } else if (msg.type === 'skip') {
         skipFrame();
-      } else if (msg.type === 'capture-received') {
-        markCaptureReceived();
       } else if (msg.type === 'close') {
         stopCamera();
         postToApp('closed');
@@ -342,6 +393,7 @@
       postToApp('closed');
     });
 
+    code = normalizeCode(code);
     render();
     postToApp('ready');
     startCamera();
